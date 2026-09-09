@@ -1,0 +1,101 @@
+name: kaalex-whatsapp-bot
+
+x-runtime-build: &runtime-build
+  context: .
+  target: runtime
+
+x-app-environment: &app-environment
+  DATABASE_URL: ${DATABASE_URL:-}
+  TEST_DATABASE_URL: ${TEST_DATABASE_URL:-}
+  APP_ENV: ${APP_ENV:-local}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8000}
+  HUGGINGFACE_ENABLED: ${HUGGINGFACE_ENABLED:-false}
+  HF_TOKEN: ${HF_TOKEN:-}
+  HUGGINGFACE_MODEL: ${HUGGINGFACE_MODEL:-Qwen/Qwen2.5-7B-Instruct:cheapest}
+  WHATSAPP_ENABLED: ${WHATSAPP_ENABLED:-false}
+  WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+  WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+  WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+  WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+  WHATSAPP_GRAPH_VERSION: ${WHATSAPP_GRAPH_VERSION:-}
+
+services:
+  db:
+    image: postgres:17.11-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kaalex}
+      POSTGRES_USER: ${POSTGRES_USER:-kaalex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - app-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  web:
+    image: kaalex-whatsapp-bot:local
+    build: *runtime-build
+    init: true
+    restart: unless-stopped
+    command: ["uv", "run", "--frozen", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *app-environment
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    image: kaalex-whatsapp-bot:local
+    init: true
+    restart: unless-stopped
+    command: ["uv", "run", "--frozen", "python", "-m", "app.worker"]
+    environment: *app-environment
+    depends_on:
+      db:
+        condition: service_healthy
+
+  test-db:
+    image: postgres:17.11-bookworm
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: ${TEST_POSTGRES_DB:-kaalex_test}
+      POSTGRES_USER: ${TEST_POSTGRES_USER:-kaalex_test}
+      POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD:-}
+    volumes:
+      - test-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  test:
+    image: kaalex-whatsapp-bot:test
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    init: true
+    command: ["uv", "run", "--frozen", "python", "-m", "pytest"]
+    environment:
+      <<: *app-environment
+      TEST_DATABASE_URL: ${TEST_DATABASE_URL:-}
+    depends_on:
+      test-db:
+        condition: service_healthy
+
+volumes:
+  app-db-data:
+  test-db-data:
