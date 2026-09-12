@@ -704,3 +704,168 @@ Final cleanup verification:
 - PASS — full suite: 67/67.
 - PASS — Ruff lint, formatting, and Git diff checks.
 - No commit, push, or T04 work was performed.
+
+### T04 — login and session security
+
+Completion date: 2026-09-12
+
+Status: PASS. T04 adds only the sole-employee provisioning command, focused authentication
+primitives, authentication router, Arabic login page, and focused security tests. T05 was not
+started. No schema, migration, dependency, configuration, provider, inbox, worker, WhatsApp, AI,
+admin, registration, reset, RBAC, commit, or push change was made.
+
+Files created:
+
+- `app/security.py`
+- `scripts/create_employee.py`
+- `app/routes/auth.py`
+- `app/templates/login.html`
+- `tests/test_security.py`
+
+Files modified:
+
+- `docs/TEST_REPORT.md`
+
+Implementation evidence:
+
+- Passwords are provisioned with `argon2-cffi`'s Argon2id default after a 12-character minimum;
+  neither plaintext passwords nor hashes are emitted by the script or HTTP responses.
+- The interactive local command uses `getpass`, confirms the password, refuses a second employee,
+  and takes a PostgreSQL transaction advisory lock before checking/creating the sole account.
+- Login creates a 256-bit opaque token (`secrets.token_urlsafe(32)`) for the HttpOnly browser
+  cookie; PostgreSQL stores only its SHA-256 hash and a 12-hour absolute expiry.
+- CSRF is one stable, session-bound strong value derived from the opaque session secret. PostgreSQL
+  stores only the CSRF SHA-256 hash; `/auth/session` recomputes and returns the same value without
+  plaintext database storage or tab-invalidating rotation.
+- Authenticated state changes require exact configured Origin and `X-CSRF-Token`; no forwarded-IP
+  header is trusted. Login accepts only same-origin JSON. Cookie settings are HttpOnly,
+  SameSite=Strict, Path `/`, and Secure in production (false only for local HTTP).
+- Failed logins are bounded at five per direct socket IP per minute in this single process. A
+  successful login clears that address's failures. Process restart resets the in-memory limiter by
+  design; distributed throttling is intentionally outside this pilot.
+
+Commands actually run for T04:
+
+1. Complete reread of the attached T04 request, `AGENTS.md`, `DECISIONS.md`,
+   `COMPANY_RULES.md`, `README.md`, and `task.md`; inspected current repository, status, schema,
+   database helpers, migration environment, test isolation, Compose, and existing report.
+2. `\.venv\Scripts\ruff.exe check app\security.py scripts\create_employee.py app\routes\auth.py tests\test_security.py`
+   — initially found import ordering, one unnecessary encoding argument, unused import, and long
+   test lines; all corrected locally.
+3. `\.venv\Scripts\ruff.exe format --check ...` — initially found two unformatted files; the
+   pinned Ruff formatter corrected them.
+4. `\.venv\Scripts\python.exe -m pytest tests\test_security.py -q` — BLOCKED locally before
+   assertions by Psycopg's documented Windows ProactorEventLoop incompatibility while Alembic
+   connected to `test-db`; it did not run against the application database.
+5. `docker compose --profile test build test` — passed three times, including after final source changes;
+   pinned Python `3.12.14-slim-bookworm` and locked dependencies used.
+6. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_security.py -q`
+   — initial 11 passed, intermediate 12 passed in 4.43s, and final 13 passed in 4.68s against
+   `test-db/kaalex_test`.
+7. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_policy.py -q`
+   — 26 passed in 0.71s.
+8. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_ownership.py -q`
+   — 10 passed in 1.66s.
+9. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_database.py -q`
+   — 18 passed in 3.49s.
+10. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_config.py -q`
+    — 13 passed in 0.28s.
+11. `docker compose --profile test run --rm test` — intermediate 79 passed in 6.58s; final 80
+    passed in 7.06s after the production-cookie header assertion.
+12. `\.venv\Scripts\ruff.exe check .` — passed.
+13. `\.venv\Scripts\ruff.exe format --check .` — passed; 25 files already formatted.
+14. `git diff --check` — passed.
+
+#### T04 acceptance criteria
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Correct/generic credential handling; no hash response | PASS | Login tests cover correct, wrong, and unknown credentials with one generic error. |
+| Sole employee provisioning and secret safety | PASS | First employee succeeds; short password and second account reject; captured output/logs exclude password and Argon2 hash. |
+| Opaque persistent sessions | PASS | Missing, unknown, expired, inactive, and revoked sessions reject; only SHA-256 token values persist. |
+| CSRF and same-origin logout | PASS | Missing/wrong CSRF and cross-origin requests reject; valid logout deletes the exact session and clears the cookie. |
+| Stable CSRF across tabs | PASS | Second-tab `/auth/session` returned the original CSRF, and it still authorized logout. |
+| Cookie flags | PASS | Production is HttpOnly/Secure/SameSite Strict/Path `/`; local HTTP is usable. |
+| Login throttling | PASS | Five failures throttle the next attempt, success resets, separate direct IPs do not share state, and X-Forwarded-For is ignored. |
+| Protected session contract | PASS | `/auth/session` requires authentication, returns identity/current CSRF only, and sets `Cache-Control: no-store`. |
+
+Regression results:
+
+- T04 security: **13 passed in 4.68s** against isolated `test-db/kaalex_test`.
+- T03 policy: **26 passed in 0.71s**; ownership: **10 passed in 1.66s**.
+- T02 database: **18 passed in 3.49s**.
+- T01 configuration: **13 passed in 0.28s**.
+- Full automated suite: **80 passed in 7.06s**.
+- Ruff lint, Ruff format check, and Git diff check: **PASS**.
+
+Remaining blockers and limitations:
+
+- The pre-existing T01 Hugging Face live routability check remains blocked by the absence of an
+  owner-supplied token; T04 does not change it.
+- T04 has no remaining automated implementation blocker. The login throttle is intentionally
+  process-local and resets on restart, per the locked pilot decision.
+
+### T04 focused security corrections
+
+Correction date: 2026-09-12
+
+Status: PASS. This narrow pre-commit correction changes only the employee-provisioning advisory
+lock namespace and two focused security assertions. T05 was not started; no authentication route,
+session/CSRF architecture, Argon2 handling, cookie policy, schema, migration, dependency, or
+specification file changed.
+
+Files changed:
+
+- `scripts/create_employee.py`
+- `tests/test_security.py`
+- `docs/TEST_REPORT.md`
+
+Corrections and tests added/changed:
+
+- Defined `EMPLOYEE_PROVISIONING_ADVISORY_LOCK_KEY = -7_240_204_000_000` and bound it to the
+  existing transaction-scoped `pg_advisory_xact_lock` call. Its negative signed-BIGINT value is
+  outside the required positive conversation-ID advisory-lock domain.
+- Added `test_provisioning_lock_is_outside_positive_conversation_id_domain`, which asserts that
+  the named key is within PostgreSQL's signed 64-bit range and negative.
+- Read `capsys.readouterr()` exactly once, then checked combined stdout, stderr, and captured logs
+  for absence of the raw provisioning password and stored Argon2 hash.
+- Extended the real PostgreSQL session-creation test to prove the raw opaque token differs from
+  `sessions.token_hash` and that the stored value equals SHA-256 of the raw token. Neither value is
+  printed in test diagnostics.
+
+Commands actually run:
+
+1. Complete reread of the five authoritative specification files, current T04 implementation,
+   security tests, report, and Git status.
+2. `\.venv\Scripts\ruff.exe check --fix scripts\create_employee.py tests\test_security.py` —
+   passed; no changes required.
+3. `\.venv\Scripts\ruff.exe format scripts\create_employee.py tests\test_security.py` — both
+   files already formatted.
+4. `\.venv\Scripts\ruff.exe check scripts\create_employee.py tests\test_security.py` and
+   `\.venv\Scripts\ruff.exe format --check scripts\create_employee.py tests\test_security.py`
+   — passed.
+5. `docker compose --profile test build test` — passed using the pinned image and frozen lock.
+6. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_security.py -q`
+   — **14 passed in 4.42s** against isolated `test-db/kaalex_test`.
+7. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_policy.py -q`
+   — **26 passed in 0.55s**.
+8. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_ownership.py -q`
+   — **10 passed in 1.43s**.
+9. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_database.py -q`
+   — **18 passed in 1.90s**.
+10. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_config.py -q`
+    — **13 passed in 0.27s**.
+11. `docker compose --profile test run --rm test` — **81 passed in 6.09s**.
+12. Final `ruff check .`, `ruff format --check .`, and `git diff --check` — passed; 25 files
+    already formatted.
+
+Final correction results:
+
+- PASS — provisioning lock is a negative signed BIGINT and cannot collide with a valid positive
+  conversation ID.
+- PASS — captured output test reads stdout/stderr once and checks it with logs.
+- PASS — raw session-token persistence assertion proves SHA-256-only storage.
+- PASS — T04 security: **14/14**.
+- PASS — T03: policy **26/26**, ownership **10/10**.
+- PASS — T02 database: **18/18**; T01 config: **13/13**.
+- PASS — full suite: **81/81**.
