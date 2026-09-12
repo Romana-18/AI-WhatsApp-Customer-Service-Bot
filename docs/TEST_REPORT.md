@@ -1,7 +1,7 @@
 # KAALEX implementation test report
 
 Report date: 2026-09-09
-Last updated: 2026-09-10
+Last updated: 2026-09-12
 
 ## Task evidence
 
@@ -222,7 +222,7 @@ subsequent successful retries are part of the evidence.
 
 ## Limitations
 
-- This report covers T01 and T02 only.
+- This report covers T01, T02, and T03.
 - No application routes, integration clients, worker implementation, or UI are implemented yet.
 - The `web` and `worker` commands intentionally reference modules scheduled for later tasks; images
   build now, but those services are not expected to start until their modules exist.
@@ -237,7 +237,7 @@ subsequent successful retries are part of the evidence.
 ### T02 — schema and migration
 
 Status: IMPLEMENTED; isolated PostgreSQL migration, constraint, transaction, persistence, drift,
-and full-regression gates passed. T03 was not started.
+and full-regression gates passed.
 
 Files created, in task order:
 
@@ -397,7 +397,7 @@ Corrections and truthful failure record:
 - No T02 implementation or automated-test blocker remains.
 - The T01 live Hugging Face token/routability blocker is unchanged and is unrelated to T02.
 - PostgreSQL integration tests require Docker and the exact isolated `test-db/kaalex_test` target.
-- T03 and every later task remain unimplemented.
+- T04 and every later task remain unimplemented.
 
 ### T02 security correction — safe database evidence
 
@@ -472,3 +472,235 @@ Final correction evidence:
 - PASS — `ruff check .`.
 - PASS — `ruff format --check .`.
 - No blocker remains for this T02 correction.
+
+### T03 — business policy and ownership
+
+Completion date: 2026-09-10
+
+Status: PASS. Deterministic policy, ownership/version transitions, and the PostgreSQL advisory gate
+are implemented and verified against the isolated `test-db/kaalex_test` database. T04 was not
+started.
+
+Files created in required task order:
+
+- `app/schemas.py`
+- `app/policy.py`
+- `app/ownership.py`
+- `tests/test_policy.py`
+- `tests/test_ownership.py`
+
+File modified after implementation:
+
+- `docs/TEST_REPORT.md`
+
+No specification, dependency, configuration, ORM schema, Alembic migration, container, T01, or T02
+implementation file was modified.
+
+Implementation evidence:
+
+- Pydantic `OwnershipSnapshot` returns immutable committed ownership data. T03 enums are limited to
+  the locked action, collection-field, and handoff-reason contracts.
+- `bot` permits a normal reply; `waiting` permits only handoff acknowledgement or one-field contact
+  collection; `human` permits no automated customer-facing action.
+- Cairo working hours use `zoneinfo.ZoneInfo("Africa/Cairo")` and reject naive datetimes. The strict
+  24-hour WhatsApp free-form window helper also requires aware datetimes.
+- The deterministic handoff precheck covers only representative direct requests for a person/call,
+  meeting, price/quotation, contract, invoice, or company visit. Ambiguous wording returns no
+  deterministic classification for later AI handling.
+- Contact collection includes only name, business field, preferred contact time, and project
+  details. It selects one missing/unasked field, never asks for the known sender phone, records each
+  question once, and stops after refusal.
+- `bot -> waiting`, `waiting/bot -> human`, and `human -> bot` transitions increment the committed
+  version. Repeated explicit handoff while already waiting/human does not transition or increment.
+- Release clears assignment, cancels queued pre-release jobs and pending bot message intents, and
+  increments again. A captured pre-transition version therefore never becomes current after return
+  to `bot`.
+- Every serialized ownership operation acquires a PostgreSQL session advisory lock keyed by the
+  positive conversation BIGINT ID, using a dedicated autocommit connection. It re-reads committed
+  state/version while protected and releases in `finally`; acquisition/release errors invalidate
+  and close the dedicated connection.
+- The narrowly named in-transaction explicit-handoff primitive allows T05 to persist its inbound
+  message/job and `bot -> waiting` transition atomically while the caller holds the ownership gate.
+
+PostgreSQL concurrency evidence:
+
+- Two independently observed PostgreSQL backend PIDs used the same conversation lock key. The
+  second connection's `pg_try_advisory_lock` returned false while the gate holder owned the lock.
+- A concurrent takeover task remained blocked until the simulated send-gate holder released the
+  advisory lock, then committed `waiting -> human` with the next version.
+- During a simulated slow AI wait, another connection acquired and released the same advisory lock
+  within a two-second bound, proving the read helper retained neither transaction nor lock across
+  generation.
+- A deliberate exception inside the advisory context propagated, after which a new connection
+  reacquired the same lock within a two-second bound.
+- An inbound-style transaction changed version 3 from `bot` to waiting version 4 and persisted its
+  synthetic job with captured version 4.
+
+#### T03 commands actually run
+
+Commands are chronological; failed attempts and corrections are retained.
+
+1. `Get-Content -Raw -LiteralPath '<attached pasted-text.txt>'` and complete reads of `AGENTS.md`, `COMPANY_RULES.md`, `DECISIONS.md`, `README.md`, and `task.md`.
+2. Split complete read of `DECISIONS.md`; `Get-Content -Raw README.md`; `git status --short`; `git log -2 --oneline`; `rg --files`.
+3. `.\.venv\Scripts\ruff.exe check app/schemas.py app/policy.py app/ownership.py tests/test_policy.py tests/test_ownership.py` — passed.
+4. `.\.venv\Scripts\ruff.exe format --check app/schemas.py app/policy.py app/ownership.py tests/test_policy.py tests/test_ownership.py` — failed; three new files required formatting.
+5. `.\.venv\Scripts\ruff.exe format app/schemas.py app/policy.py app/ownership.py tests/test_policy.py tests/test_ownership.py` — formatted three files.
+6. `.\.venv\Scripts\python.exe -m pytest tests/test_policy.py -q` — failed: 18 passed, 2 failed. A detailed quotation used the broader locked pricing reason, and the Arabic direct visit verb was not recognized.
+7. The reason mapping was aligned to DECISIONS (`call -> human_request`, detailed quotation -> pricing), and only the missing direct Arabic visit form was added.
+8. `.\.venv\Scripts\python.exe -m pytest tests/test_policy.py -q` — 21 passed in 1.13s.
+9. `docker compose --profile test build test` — passed.
+10. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_policy.py tests/test_ownership.py -q` — initial T03 integration run: 30 passed in 7.27s.
+11. Added the in-transaction handoff/job-version test required for the future atomic webhook path.
+12. Targeted Ruff check passed; targeted format check found one difference; `ruff format tests/test_ownership.py` corrected it.
+13. `docker compose --profile test build test` — Docker Desktop export failed because a cached parent snapshot did not exist. No pin or code changed.
+14. `docker compose --profile test build --no-cache test` — the exact pinned image rebuilt successfully; no Docker data was pruned.
+15. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_policy.py tests/test_ownership.py -q` — 31 passed in 4.69s.
+16. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_database.py -q` — intermediate T02 regression: 18 passed in 4.49s.
+17. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_config.py -q` — intermediate T01 regression: 13 passed in 0.51s.
+18. Added release cancellation for queued jobs and pending bot intents after final DECISIONS review; extended the existing release test.
+19. Targeted `ruff check` and `ruff format --check` over all five T03 files — passed.
+20. `docker compose --profile test build test` — final image build passed.
+21. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_policy.py tests/test_ownership.py -q` — final T03: 31 passed in 4.31s.
+22. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_database.py -q` — final T02: 18 passed in 3.37s.
+23. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_config.py -q` — final T01: 13 passed in 0.44s.
+24. `docker compose --profile test run --rm test` — full regression: 62 passed in 7.50s.
+25. `.\.venv\Scripts\ruff.exe check .` — all checks passed.
+26. `.\.venv\Scripts\ruff.exe format --check .` — 21 files already formatted.
+27. `git diff --check` — passed.
+28. Complete `Get-Content` review of all five T03 files plus an `rg` unfinished/forbidden-pattern scan — no unfinished branch or prohibited component found.
+29. `git status --short`; `git diff --stat`; `git diff --check`; T03 report-presence scan.
+
+#### T03 acceptance criteria
+
+| # | Criterion | Result | Evidence |
+| --- | --- | --- | --- |
+| 1 | Cairo working hours and boundaries | PASS | Saturday 10:00 and Thursday 21:59 open; Thursday 22:00 and Friday closed. |
+| 2 | Aware datetimes and DST transition dates | PASS | Naive values rejected; before/after both 2026 Cairo offset changes tested. |
+| 3 | Handoff enters waiting before collection | PASS | Version 4 transitioned immediately to waiting/version 5 with collection incomplete. |
+| 4 | Refusal retains queue and stops collection | PASS | State/version stayed waiting/current while `collection_stopped` became true. |
+| 5 | Known phone is not requested again | PASS | Only four optional non-phone fields can be selected; alternative phone was never asked. |
+| 6 | Takeover increments version | PASS | Both waiting and bot takeover paths increment and assign the sole employee ID. |
+| 7 | Release increments again | PASS | Human version 10 released to bot version 11 and cleared assignment. |
+| 8 | Old captured output remains invalid | PASS | Versions captured before handoff/takeover stayed invalid in human and after release to bot. |
+| 9 | Two PostgreSQL connections serialize lock users | PASS | Distinct backends observed; takeover waited until the send-gate-style holder released. |
+| 10 | No lock/transaction during slow AI wait | PASS | Same key was immediately acquired by another connection during simulated generation wait. |
+| 11 | Human rejects every automated action | PASS | Reply, acknowledgement, and collection all rejected. |
+| 12 | Waiting rejects normal replies | PASS | General reply policy returned false and raised when required. |
+| 13 | Waiting permits only acknowledgement/collection | PASS | Both permitted; no other automated action exists in the locked T03 contract. |
+| 14 | Explicit high-confidence wording detected | PASS | Representative English/Arabic direct categories mapped to locked reasons. |
+| 15 | Ambiguous wording not overclassified | PASS | Human-like, call-name, deadline, invoice-screen, and general-process examples returned none. |
+| 16 | Advisory lock released after exception | PASS | Deliberate body error followed by bounded successful reacquisition. |
+| 17 | Stale expected version rejected | PASS | Expected 7/current 8 raised conflict; state/version/assignment stayed unchanged. |
+| 18 | Immediate inbound job captures waiting version | PASS | One transaction persisted the transition to 4 and job `captured_version=4`. |
+| 19 | Release cancels pre-release work | PASS | Queued job and pending bot message both became cancelled. |
+| 20 | Strict WhatsApp 24-hour helper | PASS | Allowed before expiry; rejected exactly at 24 hours; aware inputs required. |
+
+Final automated results:
+
+- T03 policy and ownership: **31 passed in 4.31s**.
+- T02 PostgreSQL regression: **18 passed in 3.37s**.
+- T01 configuration regression: **13 passed in 0.44s**.
+- Full suite: **62 passed in 7.50s**.
+- Ruff lint: **PASS**.
+- Ruff formatting: **PASS**.
+- Git whitespace/error check: **PASS**.
+
+T03 blockers and limitations:
+
+- No T03 implementation or test blocker remains.
+- The existing T01 live Hugging Face/account blocker is unchanged and outside T03.
+- T04 and every later task remain unimplemented.
+
+### T03 focused correctness correction
+
+Correction date: 2026-09-11
+
+Status: PASS. This is a narrow correction to existing T03 behavior; no schema, migration,
+dependency, configuration, provider integration, or T04 file changed.
+
+Files changed by this correction:
+
+- `app/ownership.py`
+- `app/policy.py`
+- `tests/test_ownership.py`
+- `tests/test_policy.py`
+- `docs/TEST_REPORT.md`
+
+Correction details:
+
+1. Collection-refusal race: `automation_result_is_current` now rejects `COLLECT` when the committed
+   ownership snapshot has `collection_stopped=true`. It does not increment version or change
+   `waiting` state. A waiting handoff acknowledgement with the same current version remains valid.
+2. Deterministic-handoff false positives: the direct-call expression is anchored, bare `agent` no
+   longer represents a human request, `how much` requires price/cost context, and invoice requests
+   require a direct request ending at the invoice. Existing representative direct English and Arabic
+   handoff examples remain covered.
+3. Strict customer-service window: both aware instants are normalized to UTC before the strict
+   `< 24 hours` comparison, so Cairo DST offset changes cannot change elapsed-time behavior.
+
+Tests added or extended:
+
+- Extended the real PostgreSQL collection-refusal test to prove a captured waiting-version `COLLECT`
+  result is rejected after refusal while an acknowledgement remains permitted.
+- Added a Cairo DST elapsed-time policy case: a spring-forward wall-clock interval of 24 hours and
+  30 minutes is only 23 hours and 30 minutes elapsed and remains allowed; exact 24 elapsed hours is
+  blocked.
+- Added four conservative handoff negatives: `You can call me Ahmed.`, `How much experience does
+  your team have?`, `I need an AI agent for WhatsApp.`, and `I need an invoice automation screen.`
+
+Commands actually run for this correction:
+
+1. Complete read of the attached review request and current T03 source/tests; `git status --short`.
+2. Complete reread of `AGENTS.md`, relevant DECISIONS ownership/AI/window contract, T03 task
+   section, and `app/schemas.py`.
+3. Targeted `ruff check` — passed.
+4. Targeted `ruff format --check` — initially reported formatting in `app/ownership.py` and
+   `tests/test_ownership.py`; `ruff format` corrected both.
+5. `.\.venv\Scripts\python.exe -m pytest tests/test_policy.py -q` — 26 passed in 2.99s.
+6. `docker compose --profile test build test` — passed.
+7. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_policy.py tests/test_ownership.py -q` — 36 passed in 2.33s.
+8. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_database.py -q` — 18 passed in 2.29s.
+9. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_config.py -q` — 13 passed in 0.38s.
+10. `docker compose --profile test run --rm test` — 67 passed in 4.27s.
+11. `.\.venv\Scripts\ruff.exe check .` — passed.
+12. `.\.venv\Scripts\ruff.exe format --check .` — passed; 21 files already formatted.
+13. `git diff --check` — passed.
+
+Final correction verification:
+
+- PASS — T03 policy and ownership suite: 36/36.
+- PASS — T02 PostgreSQL regression: 18/18.
+- PASS — T01 configuration regression: 13/13.
+- PASS — full suite: 67/67.
+- PASS — Ruff lint, formatting, and Git diff checks.
+- No new T03 blocker remains. T04 is not started.
+
+### T03 pricing-pattern cleanup
+
+Cleanup date: 2026-09-12
+
+Status: PASS. Removed only the accidental duplicate generic pricing regex entries in
+`app/policy.py`; one copy of each intended English/Arabic pattern remains, including the tightened
+`how much ... cost/price` expression. This is a no-behavior-change cleanup.
+
+The report-wide limitation wording was also corrected from coverage of only T01/T02 to coverage of
+T01, T02, and T03. No ownership, schema, migration, dependency, specification, or T04 file changed.
+
+Commands actually run:
+
+1. `rg` inspection of the pricing entry and report coverage wording; `git status --short`.
+2. `.\.venv\Scripts\python.exe -m pytest tests/test_policy.py -q` — 26 passed in 15.40s.
+3. `.\.venv\Scripts\ruff.exe check .` — passed.
+4. `.\.venv\Scripts\ruff.exe format --check .` — passed; 21 files already formatted.
+5. `docker compose --profile test build test` — passed.
+6. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_ownership.py -q` — 10 passed in 6.39s.
+7. `docker compose --profile test run --rm test` — 67 passed in 6.20s.
+8. `git diff --check` — passed after the report update.
+
+Final cleanup verification:
+
+- PASS — policy tests: 26/26.
+- PASS — ownership tests: 10/10 against isolated PostgreSQL.
+- PASS — full suite: 67/67.
+- PASS — Ruff lint, formatting, and Git diff checks.
+- No commit, push, or T04 work was performed.
