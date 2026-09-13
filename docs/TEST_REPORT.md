@@ -869,3 +869,169 @@ Final correction results:
 - PASS — T03: policy **26/26**, ownership **10/10**.
 - PASS — T02 database: **18/18**; T01 config: **13/13**.
 - PASS — full suite: **81/81**.
+
+### T05 — WhatsApp inbound and Meta API client
+
+Completion date: 2026-09-13
+
+Status: PASS. T05 adds only Meta protocol normalization/text transport, the signed webhook router,
+and its focused tests. T06 was not started. No AI, worker, final messaging gate, inbox, main
+application, schema, migration, dependency, live Meta call, commit, or push change was made.
+
+Files created:
+
+- `app/whatsapp.py`
+- `app/routes/webhooks.py`
+- `tests/test_webhooks.py`
+
+Files modified:
+
+- `docs/TEST_REPORT.md`
+
+Implementation evidence:
+
+- `GET /webhooks/whatsapp` validates `hub.mode=subscribe` and the configured verify token with a
+  constant-time comparison, returning only the exact challenge on success.
+- `POST /webhooks/whatsapp` streams the raw body with the 1 MiB limit before HMAC verification,
+  checks `X-Hub-Signature-256` against the raw bytes using HMAC-SHA256 and constant-time comparison,
+  then parses JSON only after that verification.
+- Normalization iterates every entry, change, message, and status. It persists customer text,
+  records unsupported media type metadata without downloading it, and processes matching outbound
+  provider statuses without creating inbound jobs.
+- Each inbound event uses a PostgreSQL transaction to persist/update its conversation, inbound
+  `Message`, optional immediate T03 handoff transition, and `Job`. The provider message ID is the
+  database idempotency key; confirmed uniqueness conflicts are safely acknowledged as duplicates.
+- Existing conversations use T03's positive-conversation-ID advisory lock. New conversations take
+  a transaction-scoped lock on their generated conversation ID before the same atomic persistence.
+  Direct handoffs move only `bot` to `waiting`, increment version once, and give the new job that
+  committed version. Unsupported media enters `waiting` with the locked missing-information reason.
+- Status updates follow the non-regression rules: `sending -> accepted/delivered/read/failed`,
+  `accepted -> delivered/read/failed`, `delivered -> read`; read and cancelled states remain final.
+- The low-level text client uses direct HTTPX with the configured Graph version/phone-number path
+  and Bearer credential. A 2xx response with Meta message ID is `accepted`; HTTP rejection is
+  `rejected`; timeout/network failure is `uncertain`. It does not retry or act as T07's send gate.
+
+Corrections made during verification:
+
+- The first focused Docker run had three test failures caused by fixture cleanup not applying to a
+  signature-only test and SQLAlchemy test objects retaining pre-route state. Added per-test table
+  cleanup and explicit ORM refreshes. The corrected suite passed without production-code changes.
+- Added a mixed persisted-duplicate/new batch assertion and an assertion that a pre-handoff captured
+  bot version is stale after the committed T03 transition.
+- Preserved the latest actual customer timestamp when an older delayed inbound webhook arrives;
+  added a regression assertion for that ordering case.
+
+Commands actually run:
+
+1. Complete reread of the attached T05 request, all five authoritative specifications, current
+   configuration/schema/policy/ownership/shared-schema source, existing tests, report, and status.
+2. Targeted Ruff checks over `app/whatsapp.py`, `app/routes/webhooks.py`, and
+   `tests/test_webhooks.py` — initial import/line-length formatting findings corrected with the
+   pinned Ruff formatter; final targeted lint and format checks passed.
+3. `docker compose --profile test build test` — passed four times, including after final test
+   coverage additions; pinned Python image and frozen lock used.
+4. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_webhooks.py -q`
+   — initial result: 9 passed/3 failed due to the test-isolation issue above; corrected result:
+   **12 passed in 2.13s**, intermediate final result: **13 passed in 3.71s**, and final result:
+   **14 passed in 2.62s** against `test-db/kaalex_test`.
+5. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_security.py -q`
+   — **14 passed in 4.44s**.
+6. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_policy.py -q`
+   — **26 passed in 0.55s**.
+7. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_ownership.py -q`
+   — **10 passed in 1.85s**.
+8. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_database.py -q`
+   — **18 passed in 2.09s**.
+9. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_config.py -q`
+   — **13 passed in 0.32s**.
+10. `docker compose --profile test run --rm test` — intermediate **94 passed in 8.32s**; final
+    **95 passed in 10.55s** after the late-webhook timestamp regression.
+11. Final `ruff check .`, `ruff format --check .`, and `git diff --check` — passed; 28 files
+    already formatted.
+
+#### T05 acceptance criteria
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Verification challenge | PASS | Correct synthetic configured token returned challenge; wrong token rejected. |
+| Raw-byte HMAC | PASS | Valid signature accepted; wrong or modified body rejected. |
+| Size and malformed input | PASS | Oversized signed body returned 413; malformed signed JSON returned 400 with no message. |
+| Batch/idempotent inbound | PASS | All entries/messages persisted; duplicate and mixed duplicate/new delivery created exactly the required rows; late delivery cannot regress the latest inbound time. |
+| Atomic persistence | PASS | Injected database failure rolled back conversation, message, and job and returned retryable 503. |
+| T03 handoff/version | PASS | Pricing text changed bot version 4 to waiting version 5; new job captured 5 and version 4 was stale. |
+| Waiting/human repeat handoff | PASS | Existing waiting/human state and version did not advance. |
+| Unsupported media | PASS | Image metadata stored without download, queued waiting, and created one durable job. |
+| Status callbacks | PASS | Matching outbound status updated without job; late delivered/sent did not regress read. |
+| Meta text client | PASS | MockTransport observed configured Graph path, Bearer header, and JSON; accepted/rejected/uncertain stayed distinct. |
+
+Remaining blockers and limitations:
+
+- No real Meta account, credentials, callback, or live sending was used; T10 owns explicit live
+  WhatsApp verification.
+- The pre-existing T01 Hugging Face live-routability blocker remains unchanged.
+
+### T05 focused specification corrections
+
+Correction date: 2026-09-13
+
+Status: PASS. This narrow correction preserves the T05 webhook/client architecture while making
+oversized customer text queue human and making `WHATSAPP_ENABLED` a real outbound kill switch.
+T06 was not started; no schema, migration, dependency, HMAC/challenge, advisory-lock, status-rule,
+retry, worker, AI, messaging-gate, or live Meta change was made.
+
+Files changed:
+
+- `app/whatsapp.py`
+- `app/routes/webhooks.py`
+- `tests/test_webhooks.py`
+- `docs/TEST_REPORT.md`
+
+Corrections and tests added:
+
+- `InboundMessageEvent.was_truncated` preserves whether source text exceeded
+  `MAX_INBOUND_TEXT_LENGTH`; bounded text still ends with ` [truncated]`.
+- A truncated text event reuses the existing T03 in-transaction handoff primitive with the existing
+  `missing_information` reason when no direct explicit-handoff reason applies. A bot conversation
+  enters waiting once, increments once, and its new job captures that resulting version; existing
+  waiting/human conversations do not advance again.
+- `test_oversized_text_is_marked_bounded_and_queued_for_human` proves the signed webhook is below
+  the 1 MiB request cap while its original customer text exceeds 8,000 characters, the persisted
+  text is bounded/marked, and state/version/job capture move to waiting/1/1.
+- `send_text_message` now raises locally when `WHATSAPP_ENABLED=false`, before its credential or
+  HTTP work. `test_disabled_whatsapp_refuses_before_mock_transport_is_called` uses synthetic
+  credentials and `MockTransport` to prove the handler remains uncalled.
+
+Commands actually run:
+
+1. Complete reread of the five authoritative specifications, current T05 source/tests/report, and
+   Git status.
+2. Targeted Ruff check/format over the three T05 source/test files — passed; no formatting change
+   was required.
+3. `docker compose --profile test build test` — passed using the pinned image and frozen lock.
+4. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_webhooks.py -q`
+   — **16 passed in 2.63s** against isolated `test-db/kaalex_test`.
+5. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_security.py -q`
+   — **14 passed in 4.03s**.
+6. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_policy.py -q`
+   — **26 passed in 0.53s**.
+7. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_ownership.py -q`
+   — **10 passed in 1.85s**.
+8. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_database.py -q`
+   — initial **18 passed in 1.86s**; final rerun **18 passed in 2.40s**.
+9. `docker compose --profile test run --rm test uv run --frozen python -m pytest tests/test_config.py -q`
+   — **13 passed in 0.63s**.
+10. First final `docker compose --profile test run --rm test` — **96 passed, 1 failed**. The sole
+    failure was pre-existing T02 `test_duplicate_wa_id_is_rejected`, which did not receive its
+    expected `IntegrityError`. No T02 source changed. Immediate isolated T02 rerun passed, then
+    the final full rerun passed **97 in 10.27s**.
+11. Final `ruff check .`, `ruff format --check .`, and `git diff --check` — passed; 28 files
+    already formatted.
+
+Final correction results:
+
+- PASS — oversized source text is bounded, visibly marked, and queues human with correct T03
+  state/version/job capture.
+- PASS — disabled WhatsApp refuses before MockTransport receives an HTTP request.
+- PASS — T05: **16/16**; T04: **14/14**; T03 policy/ownership: **26/26**, **10/10**; T02: **18/18**;
+  T01: **13/13**.
+- PASS — final full suite: **97/97**.
